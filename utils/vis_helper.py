@@ -3,6 +3,8 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 
+import os
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 def draw_graph_list(G_list,
                     row,
@@ -90,7 +92,8 @@ def draw_graph_list_separate(G_list,
           node_color='#336699',
           alpha=1,
           linewidths=0,
-          font_size=0)
+         # font_size=0
+          )
       nx.draw_networkx_edges(G, pos, alpha=alpha, width=width)
     else:
       nx.draw_networkx_nodes(
@@ -107,3 +110,33 @@ def draw_graph_list_separate(G_list,
     plt.tight_layout()
     plt.savefig(fname+'_{:03d}.png'.format(i), dpi=300)
     plt.close()
+
+
+def draw_graph_png(G_list,):
+    for i, graph in enumerate(G_list):
+      fig = plt.figure()
+      ax = fig.add_subplot(111, projection='3d')
+
+      # Get node positions for the 3D plot
+      label = {node: graph.nodes[node] for node in graph.nodes}
+
+      # Draw nodes
+      for node, (x, y, z) in label.items():
+          ax.scatter(x, y, z, c='skyblue', s=50)
+
+      # Draw edges
+      for edge in graph.edges():
+          node1, node2 = edge
+          x = [label[node1][0], label[node2][0]]
+          y = [label[node1][1], label[node2][1]]
+          z = [label[node1][2], label[node2][2]]
+          ax.plot(x, y, z, color='gray')
+
+      # Set axis labels
+      ax.set_xlabel('X')
+      ax.set_ylabel('Y')
+      ax.set_zlabel('Z')
+      title = "graph_{}.png".format(n)
+      # Show the 3D plot
+      plt.savefig(title)
+      plt.close()

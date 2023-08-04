@@ -40,10 +40,11 @@ train:
   lr_decay: 0.3
   lr_decay_epoch: [100000000] # no decay
   num_workers: 0
-  max_epoch: 3000
+  max_epoch: 3
+ # max_epoch: 3000
   batch_size: 1
   display_iter: 10
-  snapshot_epoch: 100
+  snapshot_epoch: 1
   valid_epoch: 50
   lr: 1.0e-4
   wd: 0.0e-4
@@ -56,12 +57,12 @@ train:
 test:
   batch_size: 20
   num_workers: 0
-  num_test_gen: 20 # number of generated samples
+  num_test_gen: 2 # number of generated samples
   is_vis: true
   is_single_plot: false # visualize `num_vis` samples in a single image
   is_test_ER: false # test Erdos-Renyi baseline
   num_vis: 20
   vis_num_row: 5 # visualize `num_vis` samples in `vis_num_row` rows
   better_vis: true
-  test_model_dir: snapshot_model
-  test_model_name: gran_grid.pth
+  test_model_dir: C:\Users\vic-b\Documents\Victors\MasterThesis\GNN\GRAN\exp\GRAN\GRANMixtureBernoulli_grid_2023-Jul-25-15-51-09_2292
+  test_model_name: model_snapshot_0000003.pth

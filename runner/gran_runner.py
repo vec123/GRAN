@@ -25,7 +25,7 @@ from utils.train_helper import data_to_gpu, snapshot, load_model, EarlyStopper
 from utils.data_helper import *
 from utils.eval_helper import *
 from utils.dist_helper import compute_mmd, gaussian_emd, gaussian, emd, gaussian_tv
-from utils.vis_helper import draw_graph_list, draw_graph_list_separate
+from utils.vis_helper import draw_graph_list, draw_graph_list_separate, draw_graph_png
 from utils.data_parallel import DataParallel
 
 
@@ -110,6 +110,14 @@ class GranRunner(object):
     ### load graphs
     self.graphs = create_graphs(config.dataset.name, data_dir=config.dataset.data_path)
     
+    #num_graphs =  100
+    #graphs = []
+   # for i in range(0, num_graphs):#
+    #    title = "../../artificial_data_gen/graph_{}.pickle".format(i)
+    #    graphs.append(pickle.load(open(title, 'rb')))
+    #print(graphs)
+   # self.graphs = graphs
+
     self.train_ratio = config.dataset.train_ratio
     self.dev_ratio = config.dataset.dev_ratio
     self.block_size = config.model.block_size
@@ -159,6 +167,11 @@ class GranRunner(object):
   def train(self):
     ### create data loader
     train_dataset = eval(self.dataset_conf.loader_name)(self.config, self.graphs_train, tag='train')
+    
+    print("train_dataset: ")
+    print(train_dataset.graphs[0].nodes.data())
+    print(type(train_dataset))
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=self.train_conf.batch_size,
@@ -222,7 +235,10 @@ class GranRunner(object):
         batch_data = []
         if self.use_gpu:
           for _ in self.gpus:
-            data = train_iterator.next()
+
+            #data = train_iterator.next()
+            data = next(train_iterator)
+            print(data)
             batch_data.append(data)
             iter_count += 1
         
@@ -233,6 +249,7 @@ class GranRunner(object):
           
           if self.use_gpu:
             for dd, gpu_id in enumerate(self.gpus):
+              print("sending to gpu: ")
               data = {}
               data['adj'] = batch_data[dd][ff]['adj'].pin_memory().to(gpu_id, non_blocking=True)          
               data['edges'] = batch_data[dd][ff]['edges'].pin_memory().to(gpu_id, non_blocking=True)
@@ -276,110 +293,118 @@ class GranRunner(object):
     return 1
 
   def test(self):
-    self.config.save_dir = self.test_conf.test_model_dir
 
-    ### Compute Erdos-Renyi baseline    
-    if self.config.test.is_test_ER:
-      p_ER = sum([aa.number_of_edges() for aa in self.graphs_train]) / sum([aa.number_of_nodes() ** 2 for aa in self.graphs_train])      
-      graphs_gen = [nx.fast_gnp_random_graph(self.max_num_nodes, p_ER, seed=ii) for ii in range(self.num_test_gen)]
-    else:
-      ### load model
-      model = eval(self.model_conf.name)(self.config)
-      model_file = os.path.join(self.config.save_dir, self.test_conf.test_model_name)
-      load_model(model, model_file, self.device)
+    torch.cuda.empty_cache()
+    with torch.no_grad():
+        self.config.save_dir = self.test_conf.test_model_dir
 
-      if self.use_gpu:
-        model = nn.DataParallel(model, device_ids=self.gpus).to(self.device)
+        ### Compute Erdos-Renyi baseline    
+        if self.config.test.is_test_ER:
+          p_ER = sum([aa.number_of_edges() for aa in self.graphs_train]) / sum([aa.number_of_nodes() ** 2 for aa in self.graphs_train])      
+          graphs_gen = [nx.fast_gnp_random_graph(self.max_num_nodes, p_ER, seed=ii) for ii in range(self.num_test_gen)]
+        else:
+          ### load model
+          model = eval(self.model_conf.name)(self.config)
+          model_file = os.path.join(self.config.save_dir, self.test_conf.test_model_name)
+          load_model(model, model_file, self.device)
 
-      model.eval()
+          if self.use_gpu:
+            model = nn.DataParallel(model, device_ids=self.gpus).to(self.device)
 
-      ### Generate Graphs
-      A_pred = []
-      num_nodes_pred = []
-      num_test_batch = int(np.ceil(self.num_test_gen / self.test_conf.batch_size))
+          model.eval()
 
-      gen_run_time = []
-      for ii in tqdm(range(num_test_batch)):
-        with torch.no_grad():        
-          start_time = time.time()
-          input_dict = {}
-          input_dict['is_sampling']=True
-          input_dict['batch_size']=self.test_conf.batch_size
-          input_dict['num_nodes_pmf']=self.num_nodes_pmf_train
-          A_tmp = model(input_dict)
-          gen_run_time += [time.time() - start_time]
-          A_pred += [aa.data.cpu().numpy() for aa in A_tmp]
-          num_nodes_pred += [aa.shape[0] for aa in A_tmp]
+          ### Generate Graphs
+          A_pred = []
+          num_nodes_pred = []
+          num_test_batch = int(np.ceil(self.num_test_gen / self.test_conf.batch_size))
 
-      logger.info('Average test time per mini-batch = {}'.format(
-          np.mean(gen_run_time)))
-          
-      graphs_gen = [get_graph(aa) for aa in A_pred]
+          gen_run_time = []
+          for ii in tqdm(range(num_test_batch)):
+            with torch.no_grad():        
+              start_time = time.time()
+              input_dict = {}
+              input_dict['is_sampling']=True
+              input_dict['batch_size']=self.test_conf.batch_size
+              input_dict['num_nodes_pmf']=self.num_nodes_pmf_train
+              A_tmp = model(input_dict)
+              gen_run_time += [time.time() - start_time]
+              A_pred += [aa.data.cpu().numpy() for aa in A_tmp]
+              num_nodes_pred += [aa.shape[0] for aa in A_tmp]
 
-    ### Visualize Generated Graphs
-    if self.is_vis:
-      num_col = self.vis_num_row
-      num_row = int(np.ceil(self.num_vis / num_col))
-      test_epoch = self.test_conf.test_model_name
-      test_epoch = test_epoch[test_epoch.rfind('_') + 1:test_epoch.find('.pth')]
-      save_name = os.path.join(self.config.save_dir, '{}_gen_graphs_epoch_{}_block_{}_stride_{}.png'.format(self.config.test.test_model_name[:-4], test_epoch, self.block_size, self.stride))
+          logger.info('Average test time per mini-batch = {}'.format(
+              np.mean(gen_run_time)))
+              
+          graphs_gen = [get_graph(aa) for aa in A_pred]
+          print("generated graphs: ")
+          print(graphs_gen)
+          print(graphs_gen[0].nodes.data())
+          np.savetxt("generated_graphs.txt", graphs_gen, fmt="%s")
 
-      # remove isolated nodes for better visulization
-      graphs_pred_vis = [copy.deepcopy(gg) for gg in graphs_gen[:self.num_vis]]
+        ### Visualize Generated Graphs
+        if self.is_vis:
+          num_col = self.vis_num_row
+          num_row = int(np.ceil(self.num_vis / num_col))
+          test_epoch = self.test_conf.test_model_name
+          test_epoch = test_epoch[test_epoch.rfind('_') + 1:test_epoch.find('.pth')]
+          save_name = os.path.join(self.config.save_dir, '{}_gen_graphs_epoch_{}_block_{}_stride_{}.png'.format(self.config.test.test_model_name[:-4], test_epoch, self.block_size, self.stride))
 
-      if self.better_vis:
-        for gg in graphs_pred_vis:
-          gg.remove_nodes_from(list(nx.isolates(gg)))
+          # remove isolated nodes for better visulization
+          graphs_pred_vis = [copy.deepcopy(gg) for gg in graphs_gen[:self.num_vis]]
 
-      # display the largest connected component for better visualization
-      vis_graphs = []
-      for gg in graphs_pred_vis:        
-        CGs = [gg.subgraph(c) for c in nx.connected_components(gg)]
-        CGs = sorted(CGs, key=lambda x: x.number_of_nodes(), reverse=True)
-        vis_graphs += [CGs[0]]
+          if self.better_vis:
+            for gg in graphs_pred_vis:
+              gg.remove_nodes_from(list(nx.isolates(gg)))
 
-      if self.is_single_plot:
-        draw_graph_list(vis_graphs, num_row, num_col, fname=save_name, layout='spring')
-      else:
-        draw_graph_list_separate(vis_graphs, fname=save_name[:-4], is_single=True, layout='spring')
+          # display the largest connected component for better visualization
+          vis_graphs = []
+          for gg in graphs_pred_vis:        
+            CGs = [gg.subgraph(c) for c in nx.connected_components(gg)]
+            CGs = sorted(CGs, key=lambda x: x.number_of_nodes(), reverse=True)
+            vis_graphs += [CGs[0]]
 
-      save_name = os.path.join(self.config.save_dir, 'train_graphs.png')
+            draw_graph_png(vis_graphs)
+          #if self.is_single_plot:
+          #  draw_graph_list(vis_graphs, num_row, num_col, fname=save_name, layout='spring')
+          #else:
+          #  draw_graph_list_separate(vis_graphs, fname=save_name[:-4], is_single=True, layout='spring')
 
-      if self.is_single_plot:
-        draw_graph_list(
-            self.graphs_train[:self.num_vis],
-            num_row,
-            num_col,
-            fname=save_name,
-            layout='spring')
-      else:      
-        draw_graph_list_separate(
-            self.graphs_train[:self.num_vis],
-            fname=save_name[:-4],
-            is_single=True,
-            layout='spring')
+          save_name = os.path.join(self.config.save_dir, 'train_graphs.png')
 
-    ### Evaluation
-    if self.config.dataset.name in ['lobster']:
-      acc = eval_acc_lobster_graph(graphs_gen)
-      logger.info('Validity accuracy of generated graphs = {}'.format(acc))
+          if self.is_single_plot:
+            draw_graph_list(
+                self.graphs_train[:self.num_vis],
+                num_row,
+                num_col,
+                fname=save_name,
+                layout='spring')
+          else:      
+            draw_graph_list_separate(
+                self.graphs_train[:self.num_vis],
+                fname=save_name[:-4],
+                is_single=True,
+                layout='spring')
 
-    num_nodes_gen = [len(aa) for aa in graphs_gen]
-    
-    # Compared with Validation Set    
-    num_nodes_dev = [len(gg.nodes) for gg in self.graphs_dev]  # shape B X 1
-    mmd_degree_dev, mmd_clustering_dev, mmd_4orbits_dev, mmd_spectral_dev = evaluate(self.graphs_dev, graphs_gen, degree_only=False)
-    mmd_num_nodes_dev = compute_mmd([np.bincount(num_nodes_dev)], [np.bincount(num_nodes_gen)], kernel=gaussian_emd)
+        ### Evaluation
+        if self.config.dataset.name in ['lobster']:
+          acc = eval_acc_lobster_graph(graphs_gen)
+          logger.info('Validity accuracy of generated graphs = {}'.format(acc))
 
-    # Compared with Test Set    
-    num_nodes_test = [len(gg.nodes) for gg in self.graphs_test]  # shape B X 1
-    mmd_degree_test, mmd_clustering_test, mmd_4orbits_test, mmd_spectral_test = evaluate(self.graphs_test, graphs_gen, degree_only=False)
-    mmd_num_nodes_test = compute_mmd([np.bincount(num_nodes_test)], [np.bincount(num_nodes_gen)], kernel=gaussian_emd)
+        num_nodes_gen = [len(aa) for aa in graphs_gen]
+        
+        # Compared with Validation Set    
+        num_nodes_dev = [len(gg.nodes) for gg in self.graphs_dev]  # shape B X 1
+        mmd_degree_dev, mmd_clustering_dev, mmd_4orbits_dev, mmd_spectral_dev = evaluate(self.graphs_dev, graphs_gen, degree_only=False)
+        mmd_num_nodes_dev = compute_mmd([np.bincount(num_nodes_dev)], [np.bincount(num_nodes_gen)], kernel=gaussian_emd)
 
-    logger.info("Validation MMD scores of #nodes/degree/clustering/4orbits/spectral are = {}/{}/{}/{}/{}".format(mmd_num_nodes_dev, mmd_degree_dev, mmd_clustering_dev, mmd_4orbits_dev, mmd_spectral_dev))
-    logger.info("Test MMD scores of #nodes/degree/clustering/4orbits/spectral are = {}/{}/{}/{}/{}".format(mmd_num_nodes_test, mmd_degree_test, mmd_clustering_test, mmd_4orbits_test, mmd_spectral_test))
+        # Compared with Test Set    
+        num_nodes_test = [len(gg.nodes) for gg in self.graphs_test]  # shape B X 1
+        mmd_degree_test, mmd_clustering_test, mmd_4orbits_test, mmd_spectral_test = evaluate(self.graphs_test, graphs_gen, degree_only=False)
+        mmd_num_nodes_test = compute_mmd([np.bincount(num_nodes_test)], [np.bincount(num_nodes_gen)], kernel=gaussian_emd)
 
-    if self.config.dataset.name in ['lobster']:
-      return mmd_degree_dev, mmd_clustering_dev, mmd_4orbits_dev, mmd_spectral_dev, mmd_degree_test, mmd_clustering_test, mmd_4orbits_test, mmd_spectral_test, acc
-    else:
-      return mmd_degree_dev, mmd_clustering_dev, mmd_4orbits_dev, mmd_spectral_dev, mmd_degree_test, mmd_clustering_test, mmd_4orbits_test, mmd_spectral_test
+        logger.info("Validation MMD scores of #nodes/degree/clustering/4orbits/spectral are = {}/{}/{}/{}/{}".format(mmd_num_nodes_dev, mmd_degree_dev, mmd_clustering_dev, mmd_4orbits_dev, mmd_spectral_dev))
+        logger.info("Test MMD scores of #nodes/degree/clustering/4orbits/spectral are = {}/{}/{}/{}/{}".format(mmd_num_nodes_test, mmd_degree_test, mmd_clustering_test, mmd_4orbits_test, mmd_spectral_test))
+
+        if self.config.dataset.name in ['lobster']:
+          return mmd_degree_dev, mmd_clustering_dev, mmd_4orbits_dev, mmd_spectral_dev, mmd_degree_test, mmd_clustering_test, mmd_4orbits_test, mmd_spectral_test, acc
+        else:
+          return mmd_degree_dev, mmd_clustering_dev, mmd_4orbits_dev, mmd_spectral_dev, mmd_degree_test, mmd_clustering_test, mmd_4orbits_test, mmd_spectral_test
